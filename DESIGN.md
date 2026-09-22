@@ -22,4 +22,4 @@ The inspector's CONTEXT AT EVENT is an immutable snapshot of the context known w
 
 ## Interaction
 
-Focus uses a highlighted border and numbered panel title. Selection uses inversion and a leading chevron. Manual event navigation disables follow. Snapshot refresh preserves selected IDs. Empty states explain applicable controls. The help view scrolls in small terminals.
+Focus uses a highlighted border and numbered panel title. Selection uses inversion and a leading chevron. Manual event navigation disables follow. Switching to another agent, including returning to a previous one or following an agent link, selects the latest event matching the current flow filters without changing follow mode. Snapshot refresh within the same agent preserves selected IDs when follow is off. Empty states explain applicable controls. The help view scrolls in small terminals.

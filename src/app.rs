@@ -193,8 +193,15 @@ impl App {
                 }
             });
         self.agent_state.select(selected_agent);
-        self.selected_key =
+        let selected_key =
             selected_agent.map(|i| self.snapshot.sessions[self.agents[i].index].key.clone());
+        let selected = if self.selected_key == selected_key {
+            selected
+        } else {
+            self.detail_scroll = 0;
+            None
+        };
+        self.selected_key = selected_key;
         self.rebuild_flow(selected);
     }
     fn rebuild_flow(&mut self, selected: Option<(String, String)>) {
@@ -253,7 +260,8 @@ impl App {
         });
         let index = if self.flow.is_empty() {
             None
-        } else if self.follow {
+        } else if self.follow || selected.is_none() {
+            // A new agent view starts at its latest visible event, even with follow off.
             Some(self.flow.len() - 1)
         } else {
             selected
@@ -276,19 +284,28 @@ impl App {
     }
     fn choose_agent(&mut self, index: usize) {
         if let Some(row) = self.agents.get(index) {
-            self.selected_key = Some(self.snapshot.sessions[row.index].key.clone());
+            let key = self.snapshot.sessions[row.index].key.clone();
+            if self.selected_key.as_ref() == Some(&key) {
+                return;
+            }
+            self.selected_key = Some(key);
             self.agent_state.select(Some(index));
             self.detail_scroll = 0;
             self.rebuild_flow(None);
         }
     }
     pub fn jump_to(&mut self, key: &str) {
+        let selected = if self.selected_key.as_deref() == Some(key) {
+            self.event_key()
+        } else {
+            None
+        };
         // Navigation to a linked agent must not be silently blocked by a filter.
         self.provider = None;
         self.active_only = false;
         self.agent_query.clear();
         self.selected_key = Some(key.into());
-        self.rebuild();
+        self.rebuild_with_event(selected);
         self.pane = Pane::Flow;
         self.detail_scroll = 0;
     }
