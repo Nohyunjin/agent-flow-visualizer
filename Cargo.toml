@@ -1,0 +1,26 @@
+[package]
+name = "agent-flow"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A local terminal observatory for Claude Code and Codex agent flows"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+strip-ansi-escapes = "0.2"
+walkdir = "2"
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
