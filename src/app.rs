@@ -4,7 +4,7 @@ use crate::{
     parallel::{Parallel, matches_event},
     source::resolve_target,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, HashSet};
@@ -31,8 +31,16 @@ impl Pane {
 pub struct AgentRow {
     pub index: usize,
     pub depth: usize,
-    pub descendants: usize,
+    pub descendants: Vec<usize>,
     pub expanded: bool,
+}
+impl AgentRow {
+    pub fn working_descendants(&self, snapshot: &Snapshot, now: DateTime<Utc>) -> usize {
+        self.descendants
+            .iter()
+            .filter(|&&index| snapshot.sessions[index].status(now) == "WORKING")
+            .count()
+    }
 }
 
 pub struct App {
@@ -203,8 +211,8 @@ impl App {
             .enumerate()
             .map(|(i, s)| (s.key.as_str(), i))
             .collect();
-        let mut counts = vec![0usize; self.snapshot.sessions.len()];
-        for session in &self.snapshot.sessions {
+        let mut descendants = vec![Vec::new(); self.snapshot.sessions.len()];
+        for (index, session) in self.snapshot.sessions.iter().enumerate() {
             let mut parent = session.parent.as_deref();
             let mut seen = HashSet::from([session.key.as_str()]);
             while let Some(key) = parent {
@@ -214,7 +222,7 @@ impl App {
                 let Some(i) = by_key.get(key).copied() else {
                     break;
                 };
-                counts[i] += 1;
+                descendants[i].push(index);
                 parent = self.snapshot.sessions[i].parent.as_deref();
             }
         }
@@ -224,7 +232,7 @@ impl App {
             if folded_depth.is_some_and(|depth| row.depth > depth) {
                 continue;
             }
-            row.descendants = counts[row.index];
+            row.descendants = std::mem::take(&mut descendants[row.index]);
             row.expanded = self
                 .expanded_agents
                 .contains(&self.snapshot.sessions[row.index].key);
@@ -294,7 +302,7 @@ impl App {
         };
         let key = self.snapshot.sessions[row.index].key.clone();
         let is_expanded = row.expanded;
-        if row.descendants > 0 && expand.unwrap_or(!is_expanded) != is_expanded {
+        if !row.descendants.is_empty() && expand.unwrap_or(!is_expanded) != is_expanded {
             if is_expanded {
                 self.expanded_agents.remove(&key);
             } else {
@@ -778,7 +786,7 @@ fn append_tree(
     rows.push(AgentRow {
         index: i,
         depth,
-        descendants: 0,
+        descendants: Vec::new(),
         expanded: false,
     });
     for child in 0..snapshot.sessions.len() {

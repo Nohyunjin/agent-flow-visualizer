@@ -1,10 +1,16 @@
 use agent_flow::{
     app::{App, Pane},
     demo,
-    model::Snapshot,
+    model::{Session, Snapshot},
     ui,
 };
+use chrono::{Duration, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    Terminal,
+    backend::TestBackend,
+    style::{Color, Modifier, Style},
+};
 use std::sync::Arc;
 
 const ROOT: &str = "Codex:codex-demo";
@@ -38,6 +44,123 @@ fn visible_keys(app: &App) -> Vec<&str> {
         .map(|row| app.snapshot.sessions[row.index].key.as_str())
         .collect()
 }
+fn session_mut<'a>(snapshot: &'a mut Snapshot, key: &str) -> &'a mut Session {
+    Arc::make_mut(snapshot.sessions.iter_mut().find(|s| s.key == key).unwrap())
+}
+fn working_family() -> Snapshot {
+    let mut snapshot = demo::snapshot();
+    add_child(&mut snapshot, "nested-probe", REVIEWER);
+    let now = Utc::now();
+    for session in &mut snapshot.sessions {
+        let s = Arc::make_mut(session);
+        s.turn_open = false;
+        s.turn_known = true;
+        s.last_activity = now;
+    }
+    session_mut(&mut snapshot, ROOT).title = "Parent task".into();
+    for key in [REVIEWER, NESTED, "Claude:claude-demo/tests"] {
+        session_mut(&mut snapshot, key).turn_open = true;
+    }
+    let quiet = session_mut(&mut snapshot, "Codex:tests-demo");
+    quiet.turn_open = true;
+    quiet.last_activity = now - Duration::seconds(121);
+    snapshot
+}
+fn parent_title_style(app: &mut App) -> Style {
+    let mut terminal = Terminal::new(TestBackend::new(160, 42)).unwrap();
+    terminal.draw(|frame| ui::draw(frame, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    for y in 0..42 {
+        let line: String = (0..160).map(|x| buffer[(x, y)].symbol()).collect();
+        if line.contains("sub · Parent task")
+            && let Some(start) = line.find("Parent task")
+        {
+            let x = line[..start].chars().count() as u16;
+            return buffer[(x, y)].style();
+        }
+    }
+    panic!("Parent title missing");
+}
+
+#[test]
+fn folded_ready_parent_reveals_working_descendants_even_when_filtered_out() {
+    let mut app = explorer(working_family());
+    assert_eq!(
+        app.agents[0].working_descendants(&app.snapshot, Utc::now()),
+        2
+    );
+    assert_eq!(app.selected_session().unwrap().status(Utc::now()), "READY");
+    assert!(!app.agents[0].expanded);
+    let style = parent_title_style(&mut app);
+    assert_eq!(style.fg, Some(Color::Yellow));
+    assert!(style.add_modifier.contains(Modifier::BOLD));
+
+    // Search leaves only the parent row; nested and hidden work still counts.
+    app.agent_query = "Parent task".into();
+    app.rebuild();
+    assert_eq!(visible_keys(&app), vec![ROOT]);
+    for (width, height) in [(160, 42), (110, 35), (42, 12)] {
+        let text = ui::render_text(&mut app, width, height).unwrap();
+        assert!(text.contains("● 2 sub working"));
+        assert!(text.contains("Codex READY"));
+        assert!(text.contains("▸ 3 sub"));
+    }
+}
+
+#[test]
+fn live_child_activity_updates_without_unfolding_or_moving_the_selected_event() {
+    let mut app = explorer(working_family());
+    char_key(&mut app, '2');
+    char_key(&mut app, 'g');
+    char_key(&mut app, '1');
+    let selected = app.selected_event().unwrap().1.id.clone();
+    let mut snapshot = app.snapshot.clone();
+    session_mut(&mut snapshot, REVIEWER).turn_open = false;
+    add_child(&mut snapshot, "new-worker", ROOT);
+    session_mut(&mut snapshot, "Codex:new-worker").turn_open = true;
+    snapshot.sessions.reverse();
+    app.update(snapshot);
+    assert_eq!(app.selected_event().unwrap().1.id, selected);
+    assert!(!app.follow);
+    let row = &app.agents[app.agent_state.selected().unwrap()];
+    assert!(!row.expanded);
+    assert_eq!(row.working_descendants(&app.snapshot, Utc::now()), 2);
+
+    let mut snapshot = app.snapshot.clone();
+    for session in &mut snapshot.sessions {
+        Arc::make_mut(session).turn_open = false;
+    }
+    // The root's own WORKING state does not trigger a descendant badge.
+    session_mut(&mut snapshot, ROOT).turn_open = true;
+    app.update(snapshot);
+    let text = ui::render_text(&mut app, 160, 42).unwrap();
+    assert!(text.contains("Codex WORKING"));
+    assert!(!text.contains("sub working"));
+    assert_ne!(parent_title_style(&mut app).fg, Some(Color::Yellow));
+    assert_eq!(app.selected_event().unwrap().1.id, selected);
+    assert!(!app.follow);
+}
+
+#[test]
+fn descendant_activity_ages_out_without_rebuilding_the_tree() {
+    let app = explorer(working_family());
+    let last_activity = app
+        .snapshot
+        .sessions
+        .iter()
+        .find(|s| s.key == REVIEWER)
+        .unwrap()
+        .last_activity;
+    let row = &app.agents[0];
+    assert_eq!(
+        row.working_descendants(&app.snapshot, last_activity + Duration::seconds(120)),
+        2
+    );
+    assert_eq!(
+        row.working_descendants(&app.snapshot, last_activity + Duration::seconds(121)),
+        0
+    );
+}
 
 #[test]
 fn large_families_start_folded_and_show_counts_before_long_titles() {
@@ -48,7 +171,7 @@ fn large_families_start_folded_and_show_counts_before_long_titles() {
     Arc::make_mut(&mut snapshot.sessions[0]).title = "A very long main task ".repeat(20);
     let mut app = explorer(snapshot);
     assert_eq!(visible_keys(&app), vec![ROOT, "Claude:claude-demo"]);
-    assert_eq!(app.agents[0].descendants, 122);
+    assert_eq!(app.agents[0].descendants.len(), 122);
     assert!(!app.agents[0].expanded);
     for (width, height) in [(160, 42), (80, 24), (42, 12)] {
         let text = ui::render_text(&mut app, width, height).unwrap();
@@ -111,7 +234,7 @@ fn live_updates_keep_expansion_and_manual_event_selection_by_identity() {
     add_child(&mut snapshot, "another-worker", ROOT);
     app.update(snapshot);
     assert_eq!(visible_keys(&app), vec![ROOT, "Claude:claude-demo"]);
-    assert_eq!(app.agents[0].descendants, 3);
+    assert_eq!(app.agents[0].descendants.len(), 3);
     assert_eq!(app.selected_event().unwrap().1.id, event);
     assert!(!app.follow);
 }

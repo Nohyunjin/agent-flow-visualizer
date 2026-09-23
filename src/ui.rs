@@ -561,22 +561,25 @@ fn agents(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
+    let now = Utc::now();
     let items: Vec<ListItem> = app
         .agents
         .iter()
         .map(|row| {
             let s = &app.snapshot.sessions[row.index];
-            let status = s.status(Utc::now());
+            let status = s.status(now);
+            let working = row.working_descendants(&app.snapshot, now);
+            let activity_style = Style::default().fg(status_color("WORKING")).bold();
             let indent = if row.depth > 0 {
                 format!("{}└─", "│ ".repeat(row.depth.min(8) - 1))
             } else {
                 String::new()
             };
-            let branch = if row.descendants > 0 {
+            let branch = if !row.descendants.is_empty() {
                 format!(
                     "{indent}{} {} sub · ",
                     if row.expanded { "▾" } else { "▸" },
-                    row.descendants
+                    row.descendants.len()
                 )
             } else if row.depth > 0 {
                 format!("{indent} ")
@@ -588,7 +591,7 @@ fn agents(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 s.label()
             };
-            let elapsed = Utc::now()
+            let elapsed = now
                 .signed_duration_since(s.last_activity)
                 .num_seconds()
                 .max(0);
@@ -615,10 +618,42 @@ fn agents(frame: &mut Frame, app: &mut App, area: Rect) {
                 Some(p) if p <= 25.0 => Color::Yellow,
                 _ => ACCENT,
             };
+            let mut activity = vec![Span::raw("  ")];
+            if working > 0 {
+                activity.push(Span::styled(
+                    format!("● {working} sub working · "),
+                    activity_style,
+                ));
+            }
+            activity.push(Span::styled(
+                format!(
+                    "{event_count} ev · {}",
+                    if row.depth > 0 {
+                        one_line(&s.title, 80)
+                    } else {
+                        s.cwd.rsplit('/').next().unwrap_or("").to_owned()
+                    }
+                ),
+                Style::default().fg(MUTED),
+            ));
             ListItem::new(vec![
                 Line::from(vec![
-                    Span::styled(branch, Style::default().fg(MUTED)),
-                    Span::raw(label),
+                    Span::styled(
+                        branch,
+                        if working > 0 {
+                            activity_style
+                        } else {
+                            Style::default().fg(MUTED)
+                        },
+                    ),
+                    Span::styled(
+                        label,
+                        if working > 0 {
+                            activity_style
+                        } else {
+                            Style::default()
+                        },
+                    ),
                 ]),
                 Line::from(vec![
                     Span::raw(format!("{indent}{} ", s.provider.label())),
@@ -629,17 +664,7 @@ fn agents(frame: &mut Frame, app: &mut App, area: Rect) {
                     format!("{indent}{role} {}", context_summary(s.context)),
                     Style::default().fg(context_color),
                 ),
-                Line::styled(
-                    format!(
-                        "  {event_count} ev · {}",
-                        if row.depth > 0 {
-                            one_line(&s.title, 80)
-                        } else {
-                            s.cwd.rsplit('/').next().unwrap_or("").to_owned()
-                        }
-                    ),
-                    Style::default().fg(MUTED),
-                ),
+                Line::from(activity),
             ])
         })
         .collect();
@@ -1237,6 +1262,8 @@ fn help(frame: &mut Frame, app: &mut App, area: Rect) {
         "Agents: z / Z              Fold/unfold selected branch / fold all",
         "Agents: h l / ← →          Fold or parent / unfold or first child",
         "Branches start folded; sub counts include all loaded descendants.",
+        "Yellow titles + ● N sub working reveal activity inside folded branches.",
+        "Sub activity includes nested agents; the parent's own status stays separate.",
         "Agent search/filter changes and linked-agent jumps reveal matching paths.",
         "j k / ↑ ↓                  Move / scroll inspector",
         "g G / Home End             First / last",
