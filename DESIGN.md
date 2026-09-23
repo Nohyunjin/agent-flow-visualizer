@@ -10,11 +10,19 @@ Restrained, terminal-native. Cyan marks focus and actor identity. Yellow marks p
 
 ## Layout
 
+Start in Dashboard, with `d` switching to the three-panel Flow explorer. Dashboard ranks individual agents by slowest ended turn by default; `o` cycles total ended turn time, slowest tool and open turn age. At 125 columns use 56/44 percent session/turn lists; at 95–124 columns and sufficient height stack the lists; otherwise show the focused list. `Tab`, `1` and `2` select lists. Preserve selected session and turn identities across refresh and reordering.
+
+Session rows show task, provider, Main/Sub, transcript status, total ended time, slowest turn/tool and open age. Turn rows show duration, ENDED/INTERRUPTED/OPEN/MISSING END and timestamp/reported provenance, followed by the request and slowest tool. Use `*` for partial history or timing gaps and `—` for unknown values. Time aggregation covers only retained events; never sum children into parents, tools into turns, or overlapping intervals twice. Open age is separate from ended totals. `Enter` opens the turn boundary in Flow, `x` its slowest tool, with follow off and event filters cleared so the requested event remains visible.
+
 Three persistent contexts: agent tree, event flow, inspector. At 145 columns, use 25/39/36 percent columns. At 95 columns, retain a 32-column agent tree and stack flow/inspector. Below 95 columns, show the focused panel and retain the same keyboard controls. Minimum usable size is 42 columns by 12 rows.
+
+Flow defaults to Agent Detail: only the selected agent's own events, with ancestry, task and direct-child count above. `s` explicitly enables the combined chronological list. `v` opens Parallel from either Dashboard or Flow. Parallel uses independent columns for one root family, ordered by ancestry and stable session key, with up to three columns of at least 44 cells each (or one full-width column on smaller terminals). The focused column stays visible as the user moves across a large family.
+
+Parallel columns keep separate selection, scroll and Follow state. Their rows are not time-aligned; say this in the header and keep timestamps on events. Show task, parent, transcript status, visible/retained event count and context at the top of each column. Event filters apply across columns; agent-list filters do not hide members of the selected family. `Enter` and `v` open the focused event in Agent Detail with follow off; `3` opens its inspector. Never replace the selected event with a sibling's or the latest event during drill-down.
 
 ## Flow vocabulary
 
-Tree branches express parentage. Timestamped three-line event rows express sequence. Spawn arrows identify delegation, while the inspector shows paired input/result. Do not draw causal links between unrelated parallel agents. Full provenance lives below the event content.
+Tree branches express parentage. Timestamped three-line event rows express sequence. Spawn/message arrows identify recorded links using agent names; their preview shows the instruction, not a generic delivery receipt. The inspector shows the full paired input/result. Do not draw causal links between unrelated parallel agents. Full provenance lives below the event content.
 
 Agent rows use four lines: task identity, provider/status/age, Main/Sub current context usage and capacity with percentage free, then retained event count (`ev`) and workspace or delegated task. Show the latest request's input plus output, including cached input, rather than cumulative processing. Each agent owns its context; parents do not include child usage. Prefix estimates with `~`, show unknown usage as `—`, and unknown capacity as `?` without a free percentage. Capacity comes from recorded limits, model tags, or supported model defaults, with the source explained in the inspector. Red at 10% free or less and yellow at 25% or less accompany the numeric headroom.
 

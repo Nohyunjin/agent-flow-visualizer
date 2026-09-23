@@ -23,6 +23,7 @@ Decorative dashboards, charts that conceal actual events, and inferred activity 
 ## Design Principles
 
 - Start with the agent and its task; reveal full inputs and results on selection.
+- Keep parallel agents in separate event streams; make recorded handoffs easy to follow.
 - Keep provenance and uncertainty visible.
 - Preserve selection while new events arrive; follow the tail only when requested.
 - Make every primary operation available from the keyboard.

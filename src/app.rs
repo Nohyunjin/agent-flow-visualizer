@@ -1,4 +1,9 @@
-use crate::{model::*, source::resolve_target};
+use crate::{
+    dashboard::Dashboard,
+    model::*,
+    parallel::{Parallel, matches_event},
+    source::resolve_target,
+};
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
@@ -29,6 +34,8 @@ pub struct AgentRow {
 }
 
 pub struct App {
+    pub dashboard: Dashboard,
+    pub parallel: Parallel,
     pub snapshot: Snapshot,
     pub pane: Pane,
     pub agents: Vec<AgentRow>,
@@ -58,6 +65,8 @@ pub struct App {
 impl App {
     pub fn new(snapshot: Snapshot, demo: bool) -> Self {
         let mut app = Self {
+            dashboard: Dashboard::default(),
+            parallel: Parallel::default(),
             snapshot,
             pane: Pane::Agents,
             agents: vec![],
@@ -69,7 +78,7 @@ impl App {
             detail_max_scroll: 0,
             follow: true,
             paused: false,
-            subtree: true,
+            subtree: false,
             tools_only: false,
             errors_only: false,
             active_only: false,
@@ -203,6 +212,20 @@ impl App {
         };
         self.selected_key = selected_key;
         self.rebuild_flow(selected);
+        self.dashboard.rebuild(
+            &self.snapshot,
+            self.provider,
+            &self.agent_query,
+            self.active_only,
+        );
+        if self.parallel.visible {
+            self.parallel.rebuild(
+                &self.snapshot,
+                self.tools_only,
+                self.errors_only,
+                &self.event_query,
+            );
+        }
     }
     fn rebuild_flow(&mut self, selected: Option<(String, String)>) {
         self.flow.clear();
@@ -230,22 +253,7 @@ impl App {
                 continue;
             }
             for (ei, e) in s.events.iter().enumerate() {
-                if self.tools_only && !e.is_tool() {
-                    continue;
-                }
-                if self.errors_only && e.outcome != Outcome::Error {
-                    continue;
-                }
-                if !query.is_empty()
-                    && !format!(
-                        "{} {} {}",
-                        e.name,
-                        e.input,
-                        e.output.as_deref().unwrap_or("")
-                    )
-                    .to_lowercase()
-                    .contains(&query)
-                {
+                if !matches_event(e, self.tools_only, self.errors_only, &query) {
                     continue;
                 }
                 self.flow.push((si, ei));
@@ -308,6 +316,72 @@ impl App {
         self.rebuild_with_event(selected);
         self.pane = Pane::Flow;
         self.detail_scroll = 0;
+    }
+    fn open_dashboard_target(&mut self, tool: bool) {
+        if let Some((key, event)) = self.dashboard.target(tool) {
+            self.parallel.visible = false;
+            self.subtree = false;
+            // Explicit drill-down must reveal its exact event even under stale Flow filters.
+            self.tools_only = false;
+            self.errors_only = false;
+            self.event_query.clear();
+            self.follow = false;
+            self.selected_key = Some(key.clone());
+            self.rebuild_with_event(Some((key, event)));
+            self.pane = Pane::Flow;
+            self.detail_scroll = 0;
+            self.dashboard.visible = false;
+            self.notice.clear();
+        } else {
+            self.notice = if tool {
+                "No timed tool call in this selection."
+            } else {
+                "No retained turn boundary in this session."
+            }
+            .into();
+        }
+    }
+    pub fn toggle_parallel(&mut self) {
+        if self.parallel.visible && !self.dashboard.visible {
+            self.open_parallel_target(Pane::Flow);
+            return;
+        }
+        let selected = if self.dashboard.visible {
+            self.dashboard.selected().map(|r| (r.key.clone(), None))
+        } else {
+            self.event_key()
+                .map(|(key, event)| (key, Some(event)))
+                .or_else(|| self.selected_key.clone().map(|key| (key, None)))
+        };
+        if let Some((key, event)) = selected {
+            self.parallel.open(&self.snapshot, &key);
+            self.parallel.rebuild(
+                &self.snapshot,
+                self.tools_only,
+                self.errors_only,
+                &self.event_query,
+            );
+            self.parallel.select(&self.snapshot, &key, event.as_deref());
+            self.dashboard.visible = false;
+            self.notice.clear();
+        }
+    }
+    fn open_parallel_target(&mut self, pane: Pane) {
+        let target = self.parallel.target();
+        self.parallel.visible = false;
+        self.subtree = false;
+        if let Some((key, event)) = target {
+            // A sibling remains reachable even if the agent tree was filtered before entry.
+            self.provider = None;
+            self.active_only = false;
+            self.agent_query.clear();
+            self.follow = false;
+            self.selected_key = Some(key.clone());
+            self.rebuild_with_event(event.map(|event| (key, event)));
+        }
+        self.pane = pane;
+        self.detail_scroll = 0;
+        self.notice.clear();
     }
     fn movement(&mut self, delta: isize) {
         match self.pane {
@@ -382,6 +456,105 @@ impl App {
             }
             self.rebuild();
             return false;
+        }
+        if key.code == KeyCode::Char('d') {
+            self.dashboard.visible = !self.dashboard.visible;
+            self.notice.clear();
+            return false;
+        }
+        if key.code == KeyCode::Char('v') {
+            self.toggle_parallel();
+            return false;
+        }
+        if self.parallel.visible && !self.dashboard.visible {
+            match key.code {
+                KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => self.parallel.move_lane(1),
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => {
+                    self.parallel.move_lane(-1)
+                }
+                KeyCode::Down | KeyCode::Char('j' | ']') => {
+                    self.parallel.move_event(&self.snapshot, 1)
+                }
+                KeyCode::Up | KeyCode::Char('k' | '[') => {
+                    self.parallel.move_event(&self.snapshot, -1)
+                }
+                KeyCode::PageDown => self.parallel.move_event(&self.snapshot, 10),
+                KeyCode::PageUp => self.parallel.move_event(&self.snapshot, -10),
+                KeyCode::Home | KeyCode::Char('g') => {
+                    self.parallel.move_event(&self.snapshot, -1_000_000)
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    self.parallel.move_event(&self.snapshot, 1_000_000)
+                }
+                KeyCode::Enter | KeyCode::Char('2') => self.open_parallel_target(Pane::Flow),
+                KeyCode::Char('1') => self.open_parallel_target(Pane::Agents),
+                KeyCode::Char('3') => self.open_parallel_target(Pane::Detail),
+                KeyCode::Char('/') => self.search = Some(Pane::Flow),
+                KeyCode::Char('f') => {
+                    if let Some(lane) = self.parallel.lanes.get_mut(self.parallel.focus) {
+                        lane.follow = !lane.follow;
+                    }
+                    self.parallel.rebuild(
+                        &self.snapshot,
+                        self.tools_only,
+                        self.errors_only,
+                        &self.event_query,
+                    );
+                }
+                KeyCode::Backspace | KeyCode::Char('b') => {
+                    let parent = self
+                        .parallel
+                        .lanes
+                        .get(self.parallel.focus)
+                        .and_then(|l| self.snapshot.sessions[l.session].parent.clone());
+                    if let Some(parent) = parent {
+                        self.parallel.select(&self.snapshot, &parent, None);
+                    }
+                }
+                KeyCode::Char('q' | '?' | ' ' | 't' | 'e' | 'r') | KeyCode::Esc => {}
+                _ => return false,
+            }
+            if !matches!(
+                key.code,
+                KeyCode::Char('q' | '?' | ' ' | 't' | 'e' | 'r') | KeyCode::Esc
+            ) {
+                return false;
+            }
+        }
+        if self.dashboard.visible {
+            match key.code {
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                    self.dashboard.focus_turns = !self.dashboard.focus_turns
+                }
+                KeyCode::Char('1') => self.dashboard.focus_turns = false,
+                KeyCode::Char('2') => self.dashboard.focus_turns = true,
+                KeyCode::Down | KeyCode::Char('j') => self.dashboard.movement(1),
+                KeyCode::Up | KeyCode::Char('k') => self.dashboard.movement(-1),
+                KeyCode::PageDown => self.dashboard.movement(10),
+                KeyCode::PageUp => self.dashboard.movement(-10),
+                KeyCode::Home | KeyCode::Char('g') => self.dashboard.movement(-1_000_000),
+                KeyCode::End | KeyCode::Char('G') => self.dashboard.movement(1_000_000),
+                KeyCode::Enter => self.open_dashboard_target(false),
+                KeyCode::Char('x') => self.open_dashboard_target(true),
+                KeyCode::Char('o') => {
+                    self.dashboard.sort = self.dashboard.sort.next();
+                    self.dashboard.rebuild(
+                        &self.snapshot,
+                        self.provider,
+                        &self.agent_query,
+                        self.active_only,
+                    );
+                }
+                KeyCode::Char('/') => self.search = Some(Pane::Agents),
+                KeyCode::Char('q' | '?' | ' ' | 'a' | 'p' | 'r') | KeyCode::Esc => {}
+                _ => return false,
+            }
+            if !matches!(
+                key.code,
+                KeyCode::Char('q' | '?' | ' ' | 'a' | 'p' | 'r') | KeyCode::Esc
+            ) {
+                return false;
+            }
         }
         match key.code {
             KeyCode::Char('q') => return true,

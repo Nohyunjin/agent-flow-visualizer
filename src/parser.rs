@@ -56,6 +56,7 @@ fn event(id: String, at: DateTime<Utc>, kind: Kind, name: &str, input: String) -
         },
         target: None,
         completed_at: None,
+        turn_boundary: None,
         token_usage_at_event: None,
         usage_recorded_at: None,
         context_at_event: None,
@@ -399,16 +400,15 @@ fn codex(session: &mut Session, v: &Value, sequence: u64, limit: usize) {
             "task_started" | "turn_started" => {
                 context_limit(session, &p["model_context_window"], at);
                 working(session, at);
-                session.push(
-                    event(
-                        format!("start:{sequence}"),
-                        at,
-                        Kind::Turn,
-                        "Turn started",
-                        String::new(),
-                    ),
-                    limit,
+                let mut e = event(
+                    format!("start:{sequence}"),
+                    at,
+                    Kind::Turn,
+                    "Turn started",
+                    String::new(),
                 );
+                e.turn_boundary = Some(TurnBoundary::Start);
+                session.push(e, limit);
             }
             "task_complete" | "task_completed" | "turn_complete" | "turn_aborted" => {
                 session.turn_open = false;
@@ -426,6 +426,12 @@ fn codex(session: &mut Session, v: &Value, sequence: u64, limit: usize) {
                 );
                 if s(p, "type") == "turn_aborted" {
                     e.outcome = Outcome::Error;
+                    e.turn_boundary = Some(TurnBoundary::Interrupted);
+                } else {
+                    e.turn_boundary = Some(TurnBoundary::Completed {
+                        at,
+                        reported_ms: None,
+                    });
                 }
                 session.push(e, limit);
             }
@@ -641,16 +647,18 @@ fn claude(session: &mut Session, v: &Value, sequence: u64, limit: usize) {
         "system" if s(v, "subtype") == "turn_duration" => {
             session.turn_open = false;
             session.turn_known = true;
-            session.push(
-                event(
-                    format!("end:{sequence}"),
-                    at,
-                    Kind::Turn,
-                    "Turn completed",
-                    text(v.get("durationMs").unwrap_or(&Value::Null)),
-                ),
-                limit,
+            let mut e = event(
+                format!("end:{sequence}"),
+                at,
+                Kind::Turn,
+                "Turn completed",
+                text(v.get("durationMs").unwrap_or(&Value::Null)),
             );
+            e.turn_boundary = Some(TurnBoundary::Completed {
+                at,
+                reported_ms: v.get("durationMs").and_then(Value::as_u64),
+            });
+            session.push(e, limit);
             return;
         }
         "progress" => {
@@ -762,5 +770,28 @@ fn claude(session: &mut Session, v: &Value, sequence: u64, limit: usize) {
     if role == "assistant" && matches!(s(message, "stop_reason"), "end_turn" | "stop_sequence") {
         session.turn_open = false;
         session.turn_known = true;
+        // Keep completion on a newly recorded final response. A streamed update to an
+        // older response needs a new boundary after any intervening tool events.
+        if let Some(e) = session.events.iter_mut().rev().find(|e| {
+            e.kind == Kind::Assistant && e.time == at && e.id.starts_with(&format!("{base_id}:"))
+        }) {
+            e.turn_boundary = Some(TurnBoundary::Completed {
+                at,
+                reported_ms: None,
+            });
+        } else {
+            let mut e = event(
+                format!("end:{base_id}"),
+                at,
+                Kind::Turn,
+                "Turn completed",
+                String::new(),
+            );
+            e.turn_boundary = Some(TurnBoundary::Completed {
+                at,
+                reported_ms: None,
+            });
+            session.push(e, limit);
+        }
     }
 }

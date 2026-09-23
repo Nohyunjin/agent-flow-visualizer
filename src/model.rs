@@ -146,6 +146,16 @@ impl Outcome {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub enum TurnBoundary {
+    Start,
+    Completed {
+        at: DateTime<Utc>,
+        reported_ms: Option<u64>,
+    },
+    Interrupted,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct FlowEvent {
     pub id: String,
     pub time: DateTime<Utc>,
@@ -156,6 +166,7 @@ pub struct FlowEvent {
     pub outcome: Outcome,
     pub target: Option<String>,
     pub completed_at: Option<DateTime<Utc>>,
+    pub turn_boundary: Option<TurnBoundary>,
     /// Immutable usage known when this event was first recorded. Tool rows are
     /// anchored to the call start, even after their result arrives.
     pub token_usage_at_event: Option<TokenUsage>,

@@ -126,12 +126,13 @@ fn codex_child_does_not_inherit_parent_usage() {
 #[test]
 fn renders_session_tokens_separately_from_events_in_wide_and_narrow_panels() {
     let mut app = App::new(demo::snapshot(), true);
+    app.dashboard.visible = false;
     let wide = ui::render_text(&mut app, 160, 42).unwrap();
     assert!(wide.contains("Main ~20.0k/200.0k 90% free"));
     assert!(wide.contains("Sub ~12.9k / ? ctx"));
     assert!(wide.contains("CONTEXT AT EVENT · MAIN"));
     assert!(wide.contains("Input 19000 · Output 1000"));
-    assert!(wide.contains("6 ev"));
+    assert!(wide.contains("15 ev"));
     let narrow = ui::render_text(&mut app, 110, 35).unwrap();
     assert!(narrow.contains("Main ~20.0k/200.0k 90% free"));
     assert_eq!(compact_count(980), "980");
@@ -226,6 +227,7 @@ fn unknown_past_usage_is_not_backfilled_and_backdated_calls_never_get_future_usa
 fn inspector_remains_unchanged_while_agents_current_context_changes() {
     use std::sync::Arc;
     let mut app = App::new(demo::snapshot(), true);
+    app.dashboard.visible = false;
     app.follow = false;
     let before = ui::render_text(&mut app, 160, 42).unwrap();
     let mut snapshot = app.snapshot.clone();

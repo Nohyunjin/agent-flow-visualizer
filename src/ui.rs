@@ -1,6 +1,7 @@
 use crate::{
     app::{App, Pane},
     model::*,
+    timing::{elapsed, format_duration},
 };
 use chrono::{Local, Utc};
 use ratatui::{
@@ -53,7 +54,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .split(area);
     header(frame, app, sections[0]);
     let body = sections[1];
-    if area.width >= 145 {
+    if app.dashboard.visible {
+        dashboard(frame, app, body);
+    } else if app.parallel.visible {
+        parallel(frame, app, body);
+    } else if area.width >= 145 {
         let cols = Layout::horizontal([
             Constraint::Percentage(25),
             Constraint::Percentage(39),
@@ -114,6 +119,140 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
             app.snapshot.sessions.len()
         )),
     ]);
+    if app.dashboard.visible {
+        frame.render_widget(
+            Paragraph::new(vec![
+                title,
+                Line::from(vec![
+                    Span::styled(" DASHBOARD ", Style::default().fg(ACCENT).bold()),
+                    Span::raw(format!(
+                        " d Flow · v Parallel · o Sort: {} · {provider}{}",
+                        app.dashboard.sort.label(),
+                        if app.active_only {
+                            " · recent activity"
+                        } else {
+                            ""
+                        }
+                    )),
+                ]),
+                Line::styled(
+                    " Retained events · each agent separately · open age does not prove liveness",
+                    Style::default().fg(MUTED),
+                ),
+            ]),
+            area,
+        );
+        return;
+    }
+    if app.parallel.visible {
+        let root = app
+            .parallel
+            .root
+            .as_ref()
+            .and_then(|key| app.snapshot.sessions.iter().find(|s| &s.key == key));
+        let label = root
+            .map(|s| {
+                if s.title.is_empty() {
+                    s.label()
+                } else {
+                    one_line(&s.title, 55)
+                }
+            })
+            .unwrap_or_else(|| "Parent transcript not loaded".into());
+        frame.render_widget(
+            Paragraph::new(vec![
+                title,
+                Line::from(vec![
+                    Span::styled(" PARALLEL ", Style::default().fg(ACCENT).bold()),
+                    Span::raw(format!(
+                        "{}/{} · {label}",
+                        if app.parallel.lanes.is_empty() {
+                            0
+                        } else {
+                            app.parallel.focus + 1
+                        },
+                        app.parallel.lanes.len()
+                    )),
+                ]),
+                Line::styled(
+                    format!(
+                        " {}{}{}{}",
+                        if area.width < 65 {
+                            "Rows are not time-aligned."
+                        } else {
+                            "Independent lists; rows are not time-aligned."
+                        },
+                        if app.tools_only { "  tools" } else { "" },
+                        if app.errors_only { "  errors" } else { "" },
+                        if app.event_query.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  /{}", app.event_query)
+                        }
+                    ),
+                    Style::default().fg(MUTED),
+                ),
+            ]),
+            area,
+        );
+        return;
+    }
+    if !app.subtree
+        && let Some(session) = app.selected_session()
+    {
+        let mut trail = vec![session.label()];
+        let mut parent = session.parent.as_ref();
+        let mut seen = std::collections::HashSet::from([session.key.as_str()]);
+        while let Some(key) = parent {
+            if !seen.insert(key) {
+                break;
+            }
+            if let Some(s) = app.snapshot.sessions.iter().find(|s| &s.key == key) {
+                trail.push(s.label());
+                parent = s.parent.as_ref();
+            } else {
+                trail.push("parent not loaded".into());
+                break;
+            }
+        }
+        trail.reverse();
+        let children = app
+            .snapshot
+            .sessions
+            .iter()
+            .filter(|s| s.parent.as_ref() == Some(&session.key))
+            .count();
+        frame.render_widget(
+            Paragraph::new(vec![
+                title,
+                Line::from(vec![
+                    Span::styled(" AGENT DETAIL ", Style::default().fg(ACCENT).bold()),
+                    Span::raw(format!(
+                        "{} · {} {} · {children} children · follow {}{}{}",
+                        trail.join(" › "),
+                        session.provider.label(),
+                        session.status(now),
+                        if app.follow { "ON" } else { "OFF" },
+                        if app.tools_only { " · tools" } else { "" },
+                        if app.errors_only { " · errors" } else { "" }
+                    )),
+                ]),
+                Line::styled(
+                    format!(
+                        " Task: {}",
+                        if session.title.is_empty() {
+                            "No task recorded"
+                        } else {
+                            &session.title
+                        }
+                    ),
+                    Style::default().fg(MUTED),
+                ),
+            ]),
+            area,
+        );
+        return;
+    }
     let scope = Line::from(vec![
         Span::raw(format!(
             " {provider}  │  {}  │  {}  │  {}",
@@ -123,7 +262,7 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
                 "all sessions"
             },
             if app.subtree {
-                "agent + descendants"
+                "COMBINED events"
             } else {
                 "selected agent"
             },
@@ -147,11 +286,252 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
             title,
             scope,
             Line::styled(
-                " Status reflects transcript events, not process liveness.  ? help",
+                " d Dashboard · v Parallel · s Agent detail · Status is transcript evidence.  ? help",
                 Style::default().fg(MUTED),
             ),
         ]),
         area,
+    );
+}
+
+fn dashboard(frame: &mut Frame, app: &mut App, area: Rect) {
+    let note_height = if area.height >= 16 { 3 } else { 1 };
+    let parts = Layout::vertical([Constraint::Min(4), Constraint::Length(note_height)]).split(area);
+    if area.width >= 125 {
+        let cols = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)])
+            .split(parts[0]);
+        dashboard_sessions(frame, app, cols[0]);
+        dashboard_turns(frame, app, cols[1]);
+    } else if area.width >= 95 && area.height >= 20 {
+        let rows = Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(parts[0]);
+        dashboard_sessions(frame, app, rows[0]);
+        dashboard_turns(frame, app, rows[1]);
+    } else if app.dashboard.focus_turns {
+        dashboard_turns(frame, app, parts[0]);
+    } else {
+        dashboard_sessions(frame, app, parts[0]);
+    }
+    let selected = app
+        .dashboard
+        .selected()
+        .map(|r| &app.snapshot.sessions[r.session]);
+    let notes = vec![
+        Line::styled(
+            if area.width < 65 {
+                " * Partial · — Unknown · Tab panels"
+            } else {
+                " * Partial history / timing gaps. — Unknown. Tab: sessions ↔ turns"
+            },
+            Style::default().fg(MUTED),
+        ),
+        Line::raw(
+            " Total = ended turns, including interruptions. Open turns excluded. Tools are call → result.",
+        ),
+        Line::styled(
+            selected
+                .map(|s| {
+                    format!(
+                        " {} · {} retained / {} evicted events",
+                        s.cwd,
+                        s.events.len(),
+                        s.dropped
+                    )
+                })
+                .unwrap_or_default(),
+            Style::default().fg(MUTED),
+        ),
+    ];
+    frame.render_widget(Paragraph::new(notes), parts[1]);
+}
+
+fn dashboard_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
+    let title = format!(
+        " 1 SESSIONS {} · {}{} ",
+        app.dashboard.rows.len(),
+        app.dashboard.sort.label(),
+        if app.agent_query.is_empty() {
+            String::new()
+        } else {
+            format!(" · /{}", app.agent_query)
+        }
+    );
+    let border = block(title, !app.dashboard.focus_turns);
+    if app.dashboard.rows.is_empty() {
+        let message = if app.snapshot.scanned_at == chrono::DateTime::UNIX_EPOCH {
+            "Reading local transcripts…"
+        } else if app.snapshot.sessions.is_empty() {
+            "No local sessions found. Try --demo or check log paths with ?."
+        } else {
+            "No sessions match. Esc clears search; p changes provider; a changes activity filter."
+        };
+        frame.render_widget(
+            Paragraph::new(message)
+                .wrap(Wrap { trim: false })
+                .block(border),
+            area,
+        );
+        return;
+    }
+    let items: Vec<_> = app
+        .dashboard
+        .rows
+        .iter()
+        .map(|row| {
+            let session = &app.snapshot.sessions[row.session];
+            let t = &row.timing;
+            let status = session.status(app.snapshot.scanned_at);
+            let longest = t.longest_turn.and_then(|i| t.turns[i].duration_ms);
+            let tool = t.longest_tool.as_ref();
+            let identity = Line::from(vec![
+                Span::styled(
+                    if t.partial { "* " } else { "" },
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    if session.parent.is_none() && !session.title.is_empty() {
+                        one_line(&session.title, 70)
+                    } else {
+                        session.label()
+                    },
+                    Style::default().bold(),
+                ),
+                Span::styled(
+                    format!(
+                        "  {} {}",
+                        session.provider.label(),
+                        if session.parent.is_some() {
+                            "Sub"
+                        } else {
+                            "Main"
+                        }
+                    ),
+                    Style::default().fg(MUTED),
+                ),
+                Span::styled(
+                    format!("  {status}"),
+                    Style::default().fg(if t.partial {
+                        Color::Yellow
+                    } else {
+                        status_color(status)
+                    }),
+                ),
+            ]);
+            let metrics = if area.width >= 65 {
+                format!(
+                    "Total {:>8}   Turn {:>8}   Tool {:>8}",
+                    format_duration(t.total_ms),
+                    format_duration(longest),
+                    format_duration(tool.map(|t| t.duration_ms))
+                )
+            } else {
+                format!(
+                    "Total {} · Turn {}",
+                    format_duration(t.total_ms),
+                    format_duration(longest)
+                )
+            };
+            let tail = format!(
+                "{}{}",
+                tool.map(|t| format!("{} {}", t.name, format_duration(Some(t.duration_ms))))
+                    .unwrap_or_else(|| "No timed tool call".into()),
+                if session.turn_open {
+                    format!(" · Open {}", format_duration(t.open_ms))
+                } else {
+                    String::new()
+                }
+            );
+            ListItem::new(vec![
+                identity,
+                Line::raw(metrics),
+                Line::styled(tail, Style::default().fg(MUTED)),
+                Line::raw(""),
+            ])
+        })
+        .collect();
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(border)
+            .highlight_symbol("▸ ")
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+        area,
+        &mut app.dashboard.sessions,
+    );
+}
+
+fn dashboard_turns(frame: &mut Frame, app: &mut App, area: Rect) {
+    let title = format!(
+        " 2 TURNS {} · ended by duration ",
+        app.dashboard.turn_order.len()
+    );
+    let border = block(title, app.dashboard.focus_turns);
+    let Some(row) = app.dashboard.selected() else {
+        frame.render_widget(
+            Paragraph::new("Select a session to inspect its turns.").block(border),
+            area,
+        );
+        return;
+    };
+    if row.timing.turns.is_empty() {
+        frame.render_widget(Paragraph::new("No retained turn boundaries. Use x from Sessions to open the slowest timed tool, or d to explore Flow.").wrap(Wrap { trim: false }).block(border), area);
+        return;
+    }
+    let items: Vec<_> = app
+        .dashboard
+        .turn_order
+        .iter()
+        .map(|i| {
+            let turn = &row.timing.turns[*i];
+            let (status, shade) = if turn.interrupted {
+                ("INTERRUPTED", Color::Red)
+            } else if turn.open {
+                ("OPEN", Color::Yellow)
+            } else if turn.ended {
+                ("ENDED", Color::Green)
+            } else {
+                ("MISSING END", Color::Yellow)
+            };
+            let duration = if turn.open {
+                row.timing.open_ms
+            } else {
+                turn.duration_ms
+            };
+            let source = if turn.open {
+                "age"
+            } else if turn.duration_ms.is_none() {
+                "unknown"
+            } else if turn.reported {
+                "reported"
+            } else {
+                "timestamps"
+            };
+            let tool = turn
+                .longest_tool
+                .as_ref()
+                .map(|t| format!("x {} {}", t.name, format_duration(Some(t.duration_ms))))
+                .unwrap_or_else(|| "No timed tool call in this turn".into());
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!("#{:02}  {}  ", i + 1, format_duration(duration)),
+                        Style::default().bold(),
+                    ),
+                    Span::styled(status, Style::default().fg(shade)),
+                    Span::styled(format!(" · {source}"), Style::default().fg(MUTED)),
+                ]),
+                Line::raw(turn.label().to_owned()),
+                Line::styled(tool, Style::default().fg(MUTED)),
+                Line::raw(""),
+            ])
+        })
+        .collect();
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(border)
+            .highlight_symbol("▸ ")
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+        area,
+        &mut app.dashboard.turns,
     );
 }
 
@@ -264,7 +644,14 @@ fn agents(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn flow(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = format!(
-        " 2 FLOW {} events {} ",
+        " 2 FLOW · {} · {} events {} ",
+        if app.subtree {
+            "combined".to_owned()
+        } else {
+            app.selected_session()
+                .map(Session::label)
+                .unwrap_or_default()
+        },
         app.flow.len(),
         if app.event_query.is_empty() {
             String::new()
@@ -294,41 +681,12 @@ fn flow(frame: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app.flow[offset..end]
         .iter()
         .map(|(si, ei)| {
-            let session = &app.snapshot.sessions[*si];
-            let e = &session.events[*ei];
-            let icon = match e.kind {
-                Kind::User => "◆",
-                Kind::Assistant => "◇",
-                Kind::Tool => "├",
-                Kind::Spawn => "╞",
-                Kind::Message => "↔",
-                Kind::Turn => "●",
-                Kind::Notice => "!",
-            };
-            let name = match e.kind {
-                Kind::Spawn => format!("{} → {}", e.name, e.target.as_deref().unwrap_or("agent")),
-                _ => e.name.clone(),
-            };
-            let time = if e.time == chrono::DateTime::UNIX_EPOCH {
-                "--:--:--".into()
-            } else {
-                e.time.with_timezone(&Local).format("%H:%M:%S").to_string()
-            };
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(format!("{time}  "), Style::default().fg(MUTED)),
-                    Span::styled(one_line(&session.label(), 32), Style::default().fg(ACCENT)),
-                ]),
-                Line::from(vec![
-                    Span::styled(format!("{icon} "), Style::default().fg(color(e.outcome))),
-                    Span::raw(name),
-                    Span::styled(
-                        format!("  {}", e.outcome.label()),
-                        Style::default().fg(color(e.outcome)),
-                    ),
-                ]),
-                Line::styled(format!("│ {}", e.summary()), Style::default().fg(MUTED)),
-            ])
+            event_row(
+                &app.snapshot,
+                &app.snapshot.sessions[*si],
+                &app.snapshot.sessions[*si].events[*ei],
+                app.subtree,
+            )
         })
         .collect();
     let mut state = ratatui::widgets::ListState::default().with_selected(Some(selected - offset));
@@ -340,6 +698,224 @@ fn flow(frame: &mut Frame, app: &mut App, area: Rect) {
         area,
         &mut state,
     );
+}
+
+fn event_row(
+    snapshot: &Snapshot,
+    session: &Session,
+    e: &FlowEvent,
+    show_actor: bool,
+) -> ListItem<'static> {
+    let icon = match e.kind {
+        Kind::User => "◆",
+        Kind::Assistant => "◇",
+        Kind::Tool => "├",
+        Kind::Spawn => "╞",
+        Kind::Message => "↔",
+        Kind::Turn => "●",
+        Kind::Notice => "!",
+    };
+    let name = if matches!(e.kind, Kind::Spawn | Kind::Message) && !e.name.contains('→') {
+        let target = e.target.as_ref().map(|target| {
+            crate::source::resolve_target(snapshot, session, target)
+                .and_then(|key| {
+                    snapshot
+                        .sessions
+                        .iter()
+                        .find(|s| s.key == key)
+                        .map(|s| s.label())
+                })
+                .unwrap_or_else(|| target.clone())
+        });
+        target
+            .map(|target| format!("{} → {target}", e.name))
+            .unwrap_or_else(|| e.name.clone())
+    } else {
+        e.name.clone()
+    };
+    let summary = if matches!(e.kind, Kind::Spawn | Kind::Message) {
+        // The instruction explains the handoff; a generic delivery receipt does not.
+        serde_json::from_str::<serde_json::Value>(&e.input)
+            .ok()
+            .and_then(|value| {
+                ["message", "prompt", "content", "description"]
+                    .iter()
+                    .find_map(|key| {
+                        value
+                            .get(key)
+                            .and_then(|v| v.as_str())
+                            .map(|s| one_line(s, 180))
+                    })
+            })
+            .unwrap_or_else(|| one_line(&e.input, 180))
+    } else {
+        e.summary()
+    };
+    let time = if e.time == chrono::DateTime::UNIX_EPOCH {
+        "--:--:--".into()
+    } else {
+        e.time.with_timezone(&Local).format("%H:%M:%S").to_string()
+    };
+    ListItem::new(vec![
+        Line::from(vec![
+            Span::styled(format!("{time}  "), Style::default().fg(MUTED)),
+            Span::styled(
+                if show_actor {
+                    one_line(&session.label(), 32)
+                } else {
+                    e.completed_at
+                        .and_then(|end| elapsed(e.time, end))
+                        .map(|ms| format_duration(Some(ms)))
+                        .unwrap_or_default()
+                },
+                Style::default().fg(if show_actor { ACCENT } else { MUTED }),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{icon} "), Style::default().fg(color(e.outcome))),
+            Span::raw(name),
+            Span::styled(
+                format!("  {}", e.outcome.label()),
+                Style::default().fg(color(e.outcome)),
+            ),
+        ]),
+        Line::styled(format!("│ {summary}"), Style::default().fg(MUTED)),
+    ])
+}
+
+fn parallel(frame: &mut Frame, app: &mut App, area: Rect) {
+    let count = app.parallel.lanes.len();
+    if count == 0 {
+        frame.render_widget(
+            Paragraph::new("No retained agents in this family. v returns to agent detail.")
+                .wrap(Wrap { trim: false })
+                .block(block(" PARALLEL ".into(), true)),
+            area,
+        );
+        return;
+    }
+    let visible = (usize::from(area.width) / 44).clamp(1, 3).min(count);
+    let start = (app.parallel.focus / visible * visible).min(count.saturating_sub(visible));
+    let cols = Layout::horizontal(vec![Constraint::Ratio(1, visible as u32); visible]).split(area);
+    for (column, i) in (start..start + visible).enumerate() {
+        let lane = &mut app.parallel.lanes[i];
+        let session = &app.snapshot.sessions[lane.session];
+        let focused = i == app.parallel.focus;
+        let border = block(
+            format!(
+                " {} {} · {} ",
+                i + 1,
+                session.label(),
+                if session.parent.is_some() {
+                    "Sub"
+                } else {
+                    "Main"
+                }
+            ),
+            focused,
+        );
+        let inner = border.inner(cols[column]);
+        frame.render_widget(border, cols[column]);
+        let sections = Layout::vertical([
+            Constraint::Length(if inner.height >= 10 { 4 } else { 2 }),
+            Constraint::Min(3),
+        ])
+        .split(inner);
+        let parent = session
+            .parent
+            .as_ref()
+            .map(|key| {
+                app.snapshot
+                    .sessions
+                    .iter()
+                    .find(|s| &s.key == key)
+                    .map(|s| s.label())
+                    .unwrap_or_else(|| "not loaded".into())
+            })
+            .unwrap_or_else(|| "root".into());
+        let status = session.status(app.snapshot.scanned_at);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    if session.title.is_empty() {
+                        "No task recorded".to_owned()
+                    } else {
+                        one_line(&session.title, 100)
+                    },
+                    Style::default().bold(),
+                ),
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} {status}", session.provider.label()),
+                        Style::default().fg(status_color(status)),
+                    ),
+                    Span::raw(format!(
+                        " · {}/{} ev · {}",
+                        lane.events.len(),
+                        session.events.len(),
+                        if lane.follow { "follow" } else { "hold" }
+                    )),
+                ]),
+                Line::styled(
+                    format!(
+                        "{}{}",
+                        if session.parent.is_some() {
+                            format!("Parent: {parent}")
+                        } else {
+                            "Root agent".into()
+                        },
+                        if session.dropped > 0 {
+                            " · partial history"
+                        } else {
+                            ""
+                        }
+                    ),
+                    Style::default().fg(MUTED),
+                ),
+                Line::styled(context_summary(session.context), Style::default().fg(MUTED)),
+            ]),
+            sections[0],
+        );
+        if lane.events.is_empty() {
+            frame.render_widget(
+                Paragraph::new(
+                    "No matching events.\nClear /, t or e filters.\nEnter opens agent detail.",
+                )
+                .wrap(Wrap { trim: false }),
+                sections[1],
+            );
+            continue;
+        }
+        let rows = usize::from(sections[1].height / 3).max(1);
+        let selected = lane
+            .state
+            .selected()
+            .unwrap_or(0)
+            .min(lane.events.len() - 1);
+        let mut offset = lane.state.offset().min(selected);
+        if selected >= offset + rows {
+            offset = selected + 1 - rows;
+        }
+        offset = offset.min(lane.events.len().saturating_sub(rows));
+        *lane.state.offset_mut() = offset;
+        let items: Vec<_> = lane.events[offset..(offset + rows).min(lane.events.len())]
+            .iter()
+            .map(|ei| event_row(&app.snapshot, session, &session.events[*ei], false))
+            .collect();
+        let mut state =
+            ratatui::widgets::ListState::default().with_selected(Some(selected - offset));
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_symbol(if focused { "› " } else { "  " })
+                .highlight_style(if focused {
+                    Style::default().reversed()
+                } else {
+                    Style::default()
+                }),
+            sections[1],
+            &mut state,
+        );
+    }
 }
 
 fn detail(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -547,8 +1123,24 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
                 &app.event_query
             }
         )
+    } else if app.dashboard.visible {
+        if area.width < 65 {
+            " d Flow  Tab panel  Enter turn  x tool".into()
+        } else if area.width < 95 {
+            " d Flow  Tab panel  Enter turn  x tool  o sort".into()
+        } else {
+            " d Flow  v Parallel  Tab panels  j/k move  Enter turn  x slowest tool  o sort  / search  p provider  ? help  q quit".into()
+        }
+    } else if app.parallel.visible {
+        if area.width < 95 {
+            " h/l agents  j/k events  Enter detail".into()
+        } else {
+            " h/l or Tab agents  j/k events  Enter agent detail  v return  / search  t/e filters  f follow lane  ? help  q quit".into()
+        }
+    } else if area.width < 65 {
+        " v Parallel  Tab pane  Enter inspect".into()
     } else {
-        " Tab panels  j/k move  Enter inspect/jump  / search  f follow  Space pause  ? help  q quit"
+        " v Parallel  d Dashboard  Tab panels  Enter inspect/jump  / search  f follow  ? help  q quit"
             .into()
     };
     let issues: usize = app.snapshot.sessions.iter().map(|s| s.malformed).sum();
@@ -566,6 +1158,12 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
             app.snapshot.warnings.len(),
             app.snapshot.warnings[0]
         )
+    } else if app.dashboard.visible && area.width < 65 {
+        "v Parallel  o sort  ? help  q quit".into()
+    } else if app.parallel.visible && area.width < 95 {
+        "v return  / search  f follow  ? help  q".into()
+    } else if !app.dashboard.visible && area.width < 65 {
+        "d Dashboard  / search  ? help  q quit".into()
     } else {
         format!(
             "Read-only · {} transcripts discovered · {loading} loading · {issues} skipped records · last scan {}",
@@ -595,6 +1193,27 @@ fn help(frame: &mut Frame, app: &mut App, area: Rect) {
         height,
     );
     let mut lines = vec![
+        "DASHBOARD",
+        "d                          Switch Dashboard / Flow",
+        "Tab / 1 2                  Sessions / turns (narrow screens: focused panel)",
+        "o                          Sort by slowest turn / total / tool / open age",
+        "Enter                      Open slowest turn, or selected turn in Turns",
+        "x                          Open slowest timed tool in the focused selection",
+        "Totals cover ended turns in retained events, each agent separately.",
+        "* means partial history or timing gaps. — means unknown, never zero.",
+        "Open age is not process liveness. Unrecorded gaps are not LLM time.",
+        "",
+        "AGENT DETAIL & PARALLEL",
+        "Agent detail shows only the selected agent's own events by default.",
+        "v                          Open family lanes / return to agent detail",
+        "h l / ← → / Tab            Previous / next agent lane",
+        "j k / ↑ ↓                  Move within the focused lane",
+        "Enter                      Open the lane's selected event in agent detail",
+        "f                          Follow latest events in the focused lane only",
+        "Each lane scrolls independently. Rows are not synchronized in time.",
+        "Family lanes include parents and siblings, regardless of agent filters.",
+        "Event search and t/e filters apply to every lane. s toggles combined Flow.",
+        "",
         "NAVIGATION",
         "Tab / Shift-Tab / 1 2 3    Switch agents, flow, inspector",
         "j k / ↑ ↓                  Move / scroll inspector",

@@ -7,6 +7,7 @@ pub fn snapshot() -> Snapshot {
     let now = Utc::now();
     let mut root = Session::new(Provider::Codex, PathBuf::from("demo/codex.jsonl"));
     let mut child = Session::new(Provider::Codex, PathBuf::from("demo/reviewer.jsonl"));
+    let mut tester = Session::new(Provider::Codex, PathBuf::from("demo/tests.jsonl"));
     let mut claude = Session::new(Provider::Claude, PathBuf::from("demo/claude.jsonl"));
     let mut worker = Session::new(
         Provider::Claude,
@@ -21,8 +22,35 @@ pub fn snapshot() -> Snapshot {
     add(
         &mut root,
         json!({"type":"session_meta","payload":{"id":"codex-demo","cwd":"/workspace/payments","agent_path":"/root"}}),
-        100,
+        1000,
     );
+    for (n, start, end) in [(1, 600, 480), (2, 420, 350)] {
+        add(
+            &mut root,
+            json!({"type":"event_msg","payload":{"type":"task_started"}}),
+            start,
+        );
+        add(
+            &mut root,
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":format!("결제 재시도 조사 {n}: 테스트로 원인 확인")}]}}),
+            start - 1,
+        );
+        add(
+            &mut root,
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":format!("baseline-{n}"),"name":"exec_command","arguments":"{\"cmd\":\"cargo test payments -- --nocapture\"}"}}),
+            start - 10,
+        );
+        add(
+            &mut root,
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":format!("baseline-{n}"),"output":"Process exited with code 0\nBaseline tests passed"}}),
+            end + 5,
+        );
+        add(
+            &mut root,
+            json!({"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Baseline investigated."}}),
+            end,
+        );
+    }
     add(
         &mut root,
         json!({"type":"event_msg","payload":{"type":"task_started"}}),
@@ -95,6 +123,51 @@ pub fn snapshot() -> Snapshot {
     );
     add(
         &mut root,
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"spawn-tests","name":"spawn_agent","arguments":"{\"task_name\":\"tests\",\"message\":\"Run payment integration tests while reviewer checks retry limits\"}"}}),
+        82,
+    );
+    add(
+        &mut root,
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"spawn-tests","output":"{\"agent_id\":\"tests-demo\"}"}}),
+        81,
+    );
+    add(
+        &mut tester,
+        json!({"type":"session_meta","payload":{"id":"tests-demo","parent_thread_id":"codex-demo","agent_path":"/root/tests","cwd":"/workspace/payments"}}),
+        80,
+    );
+    add(
+        &mut tester,
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Run payment integration tests while reviewer checks retry limits"}]}}),
+        79,
+    );
+    add(
+        &mut tester,
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"integration","name":"exec_command","arguments":"{\"cmd\":\"cargo test --test payments_integration\"}"}}),
+        73,
+    );
+    add(
+        &mut tester,
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"integration","output":"Process exited with code 0\n18 integration tests passed"}}),
+        35,
+    );
+    add(
+        &mut tester,
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"test-report","name":"send_message","arguments":"{\"target\":\"/root\",\"message\":\"18 integration tests passed. Retry boundary needs reviewer follow-up.\"}"}}),
+        34,
+    );
+    add(
+        &mut tester,
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"test-report","output":"Message delivered"}}),
+        33,
+    );
+    add(
+        &mut tester,
+        json!({"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Payment integration tests complete."}}),
+        32,
+    );
+    add(
+        &mut root,
         json!({"type":"response_item","payload":{"type":"custom_tool_call","call_id":"patch","name":"apply_patch","input":"*** Update File: src/payments/retry.rs\n- if attempt > MAX_RETRIES {\n+ if attempt >= MAX_RETRIES {"}}),
         55,
     );
@@ -112,6 +185,31 @@ pub fn snapshot() -> Snapshot {
         &mut root,
         json!({"type":"response_item","payload":{"type":"function_call","call_id":"test","name":"exec_command","arguments":"{\"cmd\":\"cargo test payments\"}"}}),
         4,
+    );
+    add(
+        &mut claude,
+        json!({"type":"user","sessionId":"claude-demo","message":{"content":"접근성 검사 준비와 기존 테스트 확인"}}),
+        500,
+    );
+    add(
+        &mut claude,
+        json!({"type":"assistant","sessionId":"claude-demo","message":{"content":[{"type":"tool_use","id":"baseline-claude","name":"Bash","input":{"command":"pnpm test accessibility"}}]}}),
+        450,
+    );
+    add(
+        &mut claude,
+        json!({"type":"user","sessionId":"claude-demo","message":{"content":[{"type":"tool_result","tool_use_id":"baseline-claude","content":"Baseline accessibility tests passed"}]}}),
+        420,
+    );
+    add(
+        &mut claude,
+        json!({"type":"assistant","sessionId":"claude-demo","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"기존 접근성 검사를 확인했습니다."}]}}),
+        400,
+    );
+    add(
+        &mut claude,
+        json!({"type":"system","subtype":"turn_duration","durationMs":100000}),
+        399,
     );
     add(
         &mut claude,
@@ -158,9 +256,10 @@ pub fn snapshot() -> Snapshot {
             Arc::new(child),
             Arc::new(claude),
             Arc::new(worker),
+            Arc::new(tester),
         ],
         warnings: vec![],
-        discovered: 4,
+        discovered: 5,
         scanned_at: now,
     }
 }

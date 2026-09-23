@@ -177,6 +177,7 @@ fn child_target_resolution_is_scoped_to_its_root() {
 #[test]
 fn keyboard_drills_into_spawn_and_preserves_selection_during_updates() {
     let mut app = App::new(demo::snapshot(), true);
+    app.dashboard.visible = false;
     app.pane = Pane::Flow;
     key(&mut app, 'g');
     let spawn = app
@@ -211,6 +212,7 @@ fn keyboard_drills_into_spawn_and_preserves_selection_during_updates() {
 fn switching_agents_returns_to_latest_flow_without_enabling_follow() {
     for subtree in [true, false] {
         let mut app = App::new(demo::snapshot(), true);
+        app.dashboard.visible = false;
         app.subtree = subtree;
         app.rebuild();
         key(&mut app, '2');
@@ -220,6 +222,7 @@ fn switching_agents_returns_to_latest_flow_without_enabling_follow() {
         key(&mut app, 'g'); // Still on A: preserve the event being read.
         assert_eq!(app.selected_event().unwrap().1.id, first);
 
+        key(&mut app, 'j');
         key(&mut app, 'j');
         key(&mut app, 'j');
         assert_eq!(app.selected_key.as_deref(), Some("Claude:claude-demo"));
@@ -259,10 +262,14 @@ fn switching_agents_returns_to_latest_flow_without_enabling_follow() {
 #[test]
 fn switching_agents_respects_flow_filters_and_empty_results() {
     let mut app = App::new(demo::snapshot(), true);
+    app.dashboard.visible = false;
+    app.subtree = true; // Explicit combined mode still includes descendant errors.
+    app.rebuild();
     key(&mut app, '2');
     key(&mut app, 'g');
     key(&mut app, 'e');
     key(&mut app, '1');
+    key(&mut app, 'j');
     key(&mut app, 'j');
     key(&mut app, 'j');
     assert_eq!(app.selected_key.as_deref(), Some("Claude:claude-demo"));
@@ -276,6 +283,7 @@ fn switching_agents_respects_flow_filters_and_empty_results() {
 #[test]
 fn renders_all_panels_at_multiple_sizes_and_handles_empty_filters() {
     let mut app = App::new(demo::snapshot(), true);
+    app.dashboard.visible = false;
     for (w, h) in [(180, 44), (110, 35), (80, 24), (42, 12), (20, 8)] {
         for pane in [Pane::Agents, Pane::Flow, Pane::Detail] {
             app.pane = pane;

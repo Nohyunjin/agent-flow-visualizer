@@ -1,6 +1,9 @@
 pub mod app;
+pub mod dashboard;
 pub mod demo;
 pub mod model;
+pub mod parallel;
 pub mod parser;
 pub mod source;
+pub mod timing;
 pub mod ui;

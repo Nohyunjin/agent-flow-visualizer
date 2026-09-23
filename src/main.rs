@@ -19,6 +19,12 @@ struct Args {
     /// Use safe built-in sample sessions without reading local transcripts
     #[arg(long)]
     demo: bool,
+    /// Start in the agent/flow explorer instead of the timing dashboard
+    #[arg(long)]
+    flow: bool,
+    /// Start with independent event lanes for the selected agent family
+    #[arg(long, conflicts_with = "flow")]
+    parallel: bool,
     /// Codex sessions directory (default: $CODEX_HOME/sessions or ~/.codex/sessions)
     #[arg(long)]
     codex_dir: Option<PathBuf>,
@@ -95,10 +101,12 @@ fn main() -> Result<()> {
             if !(1..=500).contains(&width) || !(1..=200).contains(&height) {
                 bail!("Render size must be within 1..500 by 1..200");
             }
-            println!(
-                "{}",
-                ui::render_text(&mut App::new(snapshot, args.demo), width, height)?
-            );
+            let mut app = App::new(snapshot, args.demo);
+            app.dashboard.visible = !args.flow;
+            if args.parallel {
+                app.toggle_parallel();
+            }
+            println!("{}", ui::render_text(&mut app, width, height)?);
         }
         return Ok(());
     }
@@ -134,6 +142,8 @@ fn main() -> Result<()> {
         },
         args.demo,
     );
+    app.dashboard.visible = !args.flow;
+    let mut start_parallel = args.parallel;
     let result = ratatui::run(|terminal| -> Result<()> {
         let mut deferred = None;
         loop {
@@ -144,6 +154,10 @@ fn main() -> Result<()> {
                 && let Some(snapshot) = deferred.take()
             {
                 app.update(snapshot);
+            }
+            if start_parallel && app.selected_key.is_some() {
+                app.toggle_parallel();
+                start_parallel = false;
             }
             terminal.draw(|f| ui::draw(f, &mut app))?;
             if event::poll(Duration::from_millis(100))?
