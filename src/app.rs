@@ -7,7 +7,7 @@ use crate::{
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
@@ -31,6 +31,8 @@ impl Pane {
 pub struct AgentRow {
     pub index: usize,
     pub depth: usize,
+    pub descendants: usize,
+    pub expanded: bool,
 }
 
 pub struct App {
@@ -39,6 +41,8 @@ pub struct App {
     pub snapshot: Snapshot,
     pub pane: Pane,
     pub agents: Vec<AgentRow>,
+    expanded_agents: HashSet<String>,
+    agent_filter: (String, Option<Provider>, bool),
     pub flow: Vec<(usize, usize)>,
     pub agent_state: ListState,
     pub flow_state: ListState,
@@ -70,6 +74,8 @@ impl App {
             snapshot,
             pane: Pane::Agents,
             agents: vec![],
+            expanded_agents: HashSet::new(),
+            agent_filter: (String::new(), None, false),
             flow: vec![],
             agent_state: ListState::default(),
             flow_state: ListState::default(),
@@ -140,6 +146,18 @@ impl App {
             .map(|(i, _)| i)
             .collect();
         let matched: Vec<_> = visible.iter().copied().collect();
+        let filter = (self.agent_query.clone(), self.provider, self.active_only);
+        if self.agent_filter != filter {
+            self.agent_filter = filter;
+            if !query.is_empty() || self.provider.is_some() || self.active_only {
+                for i in &matched {
+                    self.reveal_agent(&self.snapshot.sessions[*i].key.clone());
+                }
+            }
+        }
+        if let Some(key) = self.selected_key.clone() {
+            self.reveal_agent(&key);
+        }
         for i in matched {
             let mut current = i;
             let mut seen = HashSet::new();
@@ -155,7 +173,7 @@ impl App {
                 current = index;
             }
         }
-        self.agents.clear();
+        let mut all_rows = Vec::new();
         let mut emitted = HashSet::new();
         for i in 0..self.snapshot.sessions.len() {
             let s = &self.snapshot.sessions[i];
@@ -168,27 +186,50 @@ impl App {
                         .any(|(j, s)| &s.key == p && visible.contains(&j))
                 })
             {
-                append_tree(
-                    &self.snapshot,
-                    i,
-                    0,
-                    &visible,
-                    &mut emitted,
-                    &mut self.agents,
-                );
+                append_tree(&self.snapshot, i, 0, &visible, &mut emitted, &mut all_rows);
             }
         }
         for i in 0..self.snapshot.sessions.len() {
             if visible.contains(&i) && !emitted.contains(&i) {
-                append_tree(
-                    &self.snapshot,
-                    i,
-                    0,
-                    &visible,
-                    &mut emitted,
-                    &mut self.agents,
-                );
+                append_tree(&self.snapshot, i, 0, &visible, &mut emitted, &mut all_rows);
             }
+        }
+        // Build the complete visible tree first, so folded descendants cannot be
+        // reintroduced as apparent roots by the orphan/cycle fallback above.
+        let by_key: HashMap<_, _> = self
+            .snapshot
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.key.as_str(), i))
+            .collect();
+        let mut counts = vec![0usize; self.snapshot.sessions.len()];
+        for session in &self.snapshot.sessions {
+            let mut parent = session.parent.as_deref();
+            let mut seen = HashSet::from([session.key.as_str()]);
+            while let Some(key) = parent {
+                if !seen.insert(key) {
+                    break;
+                }
+                let Some(i) = by_key.get(key).copied() else {
+                    break;
+                };
+                counts[i] += 1;
+                parent = self.snapshot.sessions[i].parent.as_deref();
+            }
+        }
+        self.agents.clear();
+        let mut folded_depth = None;
+        for mut row in all_rows {
+            if folded_depth.is_some_and(|depth| row.depth > depth) {
+                continue;
+            }
+            row.descendants = counts[row.index];
+            row.expanded = self
+                .expanded_agents
+                .contains(&self.snapshot.sessions[row.index].key);
+            folded_depth = (!row.expanded).then_some(row.depth);
+            self.agents.push(row);
         }
         let selected_agent = self
             .agents
@@ -226,6 +267,75 @@ impl App {
                 &self.event_query,
             );
         }
+    }
+    fn reveal_agent(&mut self, key: &str) {
+        let mut current = key.to_owned();
+        let mut seen = HashSet::from([current.clone()]);
+        while let Some(parent) = self
+            .snapshot
+            .sessions
+            .iter()
+            .find(|s| s.key == current)
+            .and_then(|s| s.parent.clone())
+        {
+            if !seen.insert(parent.clone()) {
+                break;
+            }
+            self.expanded_agents.insert(parent.clone());
+            current = parent;
+        }
+    }
+    fn fold_agent(&mut self, expand: Option<bool>) {
+        let Some(index) = self.agent_state.selected() else {
+            return;
+        };
+        let Some(row) = self.agents.get(index) else {
+            return;
+        };
+        let key = self.snapshot.sessions[row.index].key.clone();
+        let is_expanded = row.expanded;
+        if row.descendants > 0 && expand.unwrap_or(!is_expanded) != is_expanded {
+            if is_expanded {
+                self.expanded_agents.remove(&key);
+            } else {
+                self.expanded_agents.insert(key);
+            }
+            self.rebuild();
+        } else if expand == Some(false)
+            && let Some(parent) = self.selected_session().and_then(|s| s.parent.clone())
+            && let Some(i) = self
+                .agents
+                .iter()
+                .position(|r| self.snapshot.sessions[r.index].key == parent)
+        {
+            self.choose_agent(i);
+        } else if expand == Some(true)
+            && is_expanded
+            && self
+                .agents
+                .get(index + 1)
+                .is_some_and(|next| next.depth > row.depth)
+        {
+            self.choose_agent(index + 1);
+        }
+    }
+    fn fold_all_agents(&mut self) {
+        let selected = self.event_key();
+        let before = self.selected_key.clone();
+        if let Some(i) = self.agent_state.selected()
+            && let Some(root) = self.agents[..=i].iter().rev().find(|r| r.depth == 0)
+        {
+            self.selected_key = Some(self.snapshot.sessions[root.index].key.clone());
+        }
+        self.expanded_agents.clear();
+        if before != self.selected_key {
+            self.detail_scroll = 0;
+        }
+        self.rebuild_with_event(if before == self.selected_key {
+            selected
+        } else {
+            None
+        });
     }
     fn rebuild_flow(&mut self, selected: Option<(String, String)>) {
         self.flow.clear();
@@ -564,6 +674,14 @@ impl App {
             KeyCode::Char('1') => self.pane = Pane::Agents,
             KeyCode::Char('2') => self.pane = Pane::Flow,
             KeyCode::Char('3') => self.pane = Pane::Detail,
+            KeyCode::Left | KeyCode::Char('h') if self.pane == Pane::Agents => {
+                self.fold_agent(Some(false))
+            }
+            KeyCode::Right | KeyCode::Char('l') if self.pane == Pane::Agents => {
+                self.fold_agent(Some(true))
+            }
+            KeyCode::Char('z') if self.pane == Pane::Agents => self.fold_agent(None),
+            KeyCode::Char('Z') if self.pane == Pane::Agents => self.fold_all_agents(),
             KeyCode::Left | KeyCode::Char('h') => self.pane = self.pane.previous(),
             KeyCode::Right | KeyCode::Char('l') => self.pane = self.pane.next(),
             KeyCode::Down | KeyCode::Char('j') => self.movement(1),
@@ -657,7 +775,12 @@ fn append_tree(
     if !emitted.insert(i) {
         return;
     }
-    rows.push(AgentRow { index: i, depth });
+    rows.push(AgentRow {
+        index: i,
+        depth,
+        descendants: 0,
+        expanded: false,
+    });
     for child in 0..snapshot.sessions.len() {
         if visible.contains(&child)
             && snapshot.sessions[child].parent.as_ref() == Some(&snapshot.sessions[i].key)

@@ -1,4 +1,5 @@
 use agent_flow::{app::App, demo, model::*, parser::parse_line, ui};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -127,6 +128,7 @@ fn codex_child_does_not_inherit_parent_usage() {
 fn renders_session_tokens_separately_from_events_in_wide_and_narrow_panels() {
     let mut app = App::new(demo::snapshot(), true);
     app.dashboard.visible = false;
+    app.key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
     let wide = ui::render_text(&mut app, 160, 42).unwrap();
     assert!(wide.contains("Main ~20.0k/200.0k 90% free"));
     assert!(wide.contains("Sub ~12.9k / ? ctx"));

@@ -214,6 +214,7 @@ fn switching_agents_returns_to_latest_flow_without_enabling_follow() {
         let mut app = App::new(demo::snapshot(), true);
         app.dashboard.visible = false;
         app.subtree = subtree;
+        key(&mut app, 'z');
         app.rebuild();
         key(&mut app, '2');
         key(&mut app, 'g');
@@ -264,6 +265,7 @@ fn switching_agents_respects_flow_filters_and_empty_results() {
     let mut app = App::new(demo::snapshot(), true);
     app.dashboard.visible = false;
     app.subtree = true; // Explicit combined mode still includes descendant errors.
+    key(&mut app, 'z');
     app.rebuild();
     key(&mut app, '2');
     key(&mut app, 'g');

@@ -537,7 +537,7 @@ fn dashboard_turns(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn agents(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = format!(
-        " 1 AGENTS {}/{} · CONTEXT {} ",
+        " 1 AGENTS {}/{} · z fold {} ",
         app.agents.len(),
         app.snapshot.discovered,
         if app.agent_query.is_empty() {
@@ -567,10 +567,21 @@ fn agents(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|row| {
             let s = &app.snapshot.sessions[row.index];
             let status = s.status(Utc::now());
-            let branch = if row.depth > 0 {
-                format!("{}└─ ", "│ ".repeat(row.depth.min(8) - 1))
+            let indent = if row.depth > 0 {
+                format!("{}└─", "│ ".repeat(row.depth.min(8) - 1))
             } else {
-                "▸ ".into()
+                String::new()
+            };
+            let branch = if row.descendants > 0 {
+                format!(
+                    "{indent}{} {} sub · ",
+                    if row.expanded { "▾" } else { "▸" },
+                    row.descendants
+                )
+            } else if row.depth > 0 {
+                format!("{indent} ")
+            } else {
+                "· ".into()
             };
             let label = if row.depth == 0 && !s.title.is_empty() {
                 one_line(&s.title, 70)
@@ -1137,6 +1148,13 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             " h/l or Tab agents  j/k events  Enter agent detail  v return  / search  t/e filters  f follow lane  ? help  q quit".into()
         }
+    } else if app.pane == Pane::Agents {
+        if area.width < 65 {
+            " z fold  Z fold all  ←/→ tree  Enter Flow".into()
+        } else {
+            " z fold  Z fold all  h/l or ←/→ tree  Enter Flow  Tab panels  / search  ? help  q quit"
+                .into()
+        }
     } else if area.width < 65 {
         " v Parallel  Tab pane  Enter inspect".into()
     } else {
@@ -1216,6 +1234,10 @@ fn help(frame: &mut Frame, app: &mut App, area: Rect) {
         "",
         "NAVIGATION",
         "Tab / Shift-Tab / 1 2 3    Switch agents, flow, inspector",
+        "Agents: z / Z              Fold/unfold selected branch / fold all",
+        "Agents: h l / ← →          Fold or parent / unfold or first child",
+        "Branches start folded; sub counts include all loaded descendants.",
+        "Agent search/filter changes and linked-agent jumps reveal matching paths.",
         "j k / ↑ ↓                  Move / scroll inspector",
         "g G / Home End             First / last",
         "PageUp PageDown            Move ten rows",

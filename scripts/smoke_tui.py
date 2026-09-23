@@ -52,6 +52,9 @@ try:
     assert b"FAILED retry_limit" in captured, "lane drill-down did not open the selected tool"
     os.write(master, b"b")
     drain()
+    for keys in [b"1Z", b"z", b"l", b"h", b"z", b"\r"]:
+        os.write(master, keys)
+        drain()
     for keys in [b"d", b"ooo", b"\r", b"d", b"2j", b"\r"]:
         os.write(master, keys)
         drain()
@@ -84,7 +87,7 @@ try:
     assert os.waitstatus_to_exitcode(status) == 0, f"exit status {status}"
     assert b"\x1b[?1049l" in captured, "alternate screen was not restored"
     assert b"panicked" not in captured, "panic detected"
-    print("PTY smoke passed: dashboard, agent detail, family lanes, exact tool/turn drill-down, filters, follow, resize down to 42x12, clean exit")
+    print("PTY smoke passed: dashboard, foldable agent tree, agent detail, family lanes, exact tool/turn drill-down, filters, follow, resize down to 42x12, clean exit")
 finally:
     os.close(master)
     try:
