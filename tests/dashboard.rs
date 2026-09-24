@@ -326,8 +326,10 @@ fn dashboard_keeps_selected_session_and_turn_when_live_ranking_changes() {
     let mut snapshot = app.snapshot.clone();
     let mut fast = codex(&[(0, start()), (900, end())]);
     fast.key = "Codex:new-long-turn".into();
+    fast.last_activity = snapshot.scanned_at;
     snapshot.sessions.insert(0, Arc::new(fast));
     app.update(snapshot);
+    assert_eq!(app.dashboard.rows[0].key, "Codex:new-long-turn");
     assert_eq!(app.dashboard.selected().unwrap().key, selected_session);
     assert_eq!(
         app.dashboard.selected_turn().unwrap().event_id,
@@ -395,4 +397,147 @@ fn dashboard_renders_session_and_turn_views_at_supported_terminal_sizes() {
     assert!(wide.contains("3m 10s"));
     assert!(wide.contains("1m 45s"));
     assert!(wide.contains("timestamps"));
+}
+
+fn age_snapshot() -> Snapshot {
+    let sessions = [
+        ("old", -8 * 86400, 600),
+        ("week", -3 * 86400, 120),
+        ("recent", -300, 30),
+    ]
+    .into_iter()
+    .map(|(name, ended, duration)| {
+        let mut s = codex(&[
+            (
+                -30 * 86400,
+                json!({"type":"session_meta","payload":{"id":name}}),
+            ),
+            (ended - duration, start()),
+            (ended, end()),
+        ]);
+        s.title = name.into();
+        Arc::new(s)
+    })
+    .collect();
+    Snapshot {
+        sessions,
+        scanned_at: at(0),
+        ..Snapshot::default()
+    }
+}
+
+fn dashboard_keys(app: &App) -> Vec<&str> {
+    app.dashboard.rows.iter().map(|r| r.key.as_str()).collect()
+}
+
+#[test]
+fn dashboard_defaults_to_last_24_hours_of_activity_even_for_old_sessions() {
+    let app = App::new(age_snapshot(), false);
+    assert_eq!(dashboard_keys(&app), ["Codex:recent"]);
+    assert_eq!(app.snapshot.sessions.len(), 3);
+    assert_eq!(app.agents.len(), 3);
+    assert_eq!(
+        app.dashboard.selected().unwrap().timing.total_ms,
+        Some(30_000)
+    );
+}
+
+#[test]
+fn dashboard_window_cycles_without_changing_sort_selection_or_flow_scope() {
+    let mut app = App::new(age_snapshot(), false);
+    let turn = app.dashboard.selected_turn().unwrap().event_id.clone();
+    key(&mut app, KeyCode::Char('2'));
+    key(&mut app, KeyCode::Char('w'));
+    assert_eq!(dashboard_keys(&app), ["Codex:week", "Codex:recent"]);
+    assert_eq!(app.dashboard.selected().unwrap().key, "Codex:recent");
+    assert_eq!(app.dashboard.selected_turn().unwrap().event_id, turn);
+    key(&mut app, KeyCode::Char('w'));
+    assert_eq!(
+        dashboard_keys(&app),
+        ["Codex:old", "Codex:week", "Codex:recent"]
+    );
+    assert_eq!(app.dashboard.selected().unwrap().key, "Codex:recent");
+    key(&mut app, KeyCode::Char('o'));
+    assert_eq!(app.dashboard.sort, Sort::Total);
+    key(&mut app, KeyCode::Char('w'));
+    assert_eq!(dashboard_keys(&app), ["Codex:recent"]);
+    assert_eq!(app.dashboard.sort, Sort::Total);
+    key(&mut app, KeyCode::Char('d'));
+    key(&mut app, KeyCode::Char('w'));
+    assert_eq!(app.agents.len(), 3);
+    key(&mut app, KeyCode::Char('d'));
+    assert_eq!(dashboard_keys(&app), ["Codex:recent"]);
+}
+
+#[test]
+fn dashboard_activity_cutoffs_are_inclusive_and_unknown_dates_require_all() {
+    let mut snapshot = age_snapshot();
+    snapshot.sessions.clear();
+    for (name, time) in [
+        ("day", at(-86400)),
+        ("outside-day", at(-86400) - Duration::milliseconds(1)),
+        ("week", at(-7 * 86400)),
+        ("outside-week", at(-7 * 86400) - Duration::milliseconds(1)),
+        ("unknown", DateTime::UNIX_EPOCH),
+    ] {
+        let mut s = Session::new(Provider::Codex, PathBuf::from(format!("{name}.jsonl")));
+        s.key = name.into();
+        s.last_activity = time;
+        snapshot.sessions.push(Arc::new(s));
+    }
+    let mut app = App::new(snapshot, false);
+    assert_eq!(dashboard_keys(&app), ["day"]);
+    key(&mut app, KeyCode::Char('w'));
+    assert_eq!(dashboard_keys(&app), ["day", "outside-day", "week"]);
+    key(&mut app, KeyCode::Char('w'));
+    assert_eq!(app.dashboard.rows.len(), 5);
+    assert!(dashboard_keys(&app).contains(&"unknown"));
+}
+
+#[test]
+fn dashboard_refresh_expires_sessions_and_restores_them_after_new_activity() {
+    let mut app = App::new(age_snapshot(), false);
+    let mut snapshot = app.snapshot.clone();
+    snapshot.scanned_at = at(86400);
+    app.update(snapshot.clone());
+    assert!(app.dashboard.rows.is_empty());
+    assert!(app.dashboard.selected_turn().is_none());
+    assert!(app.dashboard.target(false).is_none());
+    add(
+        Arc::make_mut(&mut snapshot.sessions[0]),
+        start(),
+        86400,
+        10,
+        100,
+    );
+    app.update(snapshot);
+    assert_eq!(dashboard_keys(&app), ["Codex:old"]);
+    assert_eq!(app.dashboard.selected().unwrap().key, "Codex:old");
+}
+
+#[test]
+fn dashboard_shows_window_age_and_empty_state_controls_in_small_terminals() {
+    let mut app = App::new(age_snapshot(), false);
+    for (w, h) in [(160, 42), (110, 35), (80, 24), (42, 12)] {
+        let text = ui::render_text(&mut app, w, h).unwrap();
+        assert!(text.contains("w Activity: 24h"), "{text}");
+        assert!(text.contains("Last 5m ago"), "{text}");
+    }
+    key(&mut app, KeyCode::Char('w'));
+    let text = ui::render_text(&mut app, 160, 42).unwrap();
+    assert!(text.contains("w Activity: 7d"));
+    assert!(text.contains("Last 3d ago"));
+    key(&mut app, KeyCode::Char('w'));
+    assert!(
+        ui::render_text(&mut app, 160, 42)
+            .unwrap()
+            .contains("w Activity: All")
+    );
+    key(&mut app, KeyCode::Char('w'));
+    let mut snapshot = app.snapshot.clone();
+    snapshot.scanned_at = at(86400);
+    app.update(snapshot);
+    let text = ui::render_text(&mut app, 42, 12).unwrap();
+    assert!(text.contains("No sessions match"));
+    assert!(text.contains("w: 24h / 7d / All"));
 }

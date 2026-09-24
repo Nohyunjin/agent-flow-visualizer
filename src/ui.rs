@@ -3,7 +3,7 @@ use crate::{
     model::*,
     timing::{elapsed, format_duration},
 };
-use chrono::{Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -34,6 +34,24 @@ fn block(title: String, focused: bool) -> Block<'static> {
         .borders(Borders::ALL)
         .title(title)
         .border_style(Style::default().fg(if focused { ACCENT } else { MUTED }))
+}
+
+fn activity_age(last_activity: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let elapsed = now
+        .signed_duration_since(last_activity)
+        .num_seconds()
+        .max(0);
+    if last_activity == DateTime::UNIX_EPOCH {
+        "?".into()
+    } else if elapsed < 60 {
+        format!("{elapsed}s")
+    } else if elapsed < 3600 {
+        format!("{}m", elapsed / 60)
+    } else if elapsed < 86400 {
+        format!("{}h", elapsed / 3600)
+    } else {
+        format!("{}d", elapsed / 86400)
+    }
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -126,7 +144,8 @@ fn header(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(vec![
                     Span::styled(" DASHBOARD ", Style::default().fg(ACCENT).bold()),
                     Span::raw(format!(
-                        " d Flow · v Parallel · o Sort: {} · {provider}{}",
+                        " w Activity: {} · o Sort: {} · {provider}{}",
+                        app.dashboard.window.label(),
                         app.dashboard.sort.label(),
                         if app.active_only {
                             " · recent activity"
@@ -363,7 +382,7 @@ fn dashboard_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         } else if app.snapshot.sessions.is_empty() {
             "No local sessions found. Try --demo or check log paths with ?."
         } else {
-            "No sessions match. Esc clears search; p changes provider; a changes activity filter."
+            "No sessions match. w: 24h / 7d / All; Esc: clear search; p: provider; a: activity."
         };
         frame.render_widget(
             Paragraph::new(message)
@@ -441,11 +460,19 @@ fn dashboard_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
                     String::new()
                 }
             );
+            let last_activity = if session.last_activity == DateTime::UNIX_EPOCH {
+                "Last activity unknown".into()
+            } else {
+                format!(
+                    "Last {} ago",
+                    activity_age(session.last_activity, app.snapshot.scanned_at)
+                )
+            };
             ListItem::new(vec![
                 identity,
                 Line::raw(metrics),
                 Line::styled(tail, Style::default().fg(MUTED)),
-                Line::raw(""),
+                Line::styled(last_activity, Style::default().fg(MUTED)),
             ])
         })
         .collect();
@@ -591,21 +618,7 @@ fn agents(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 s.label()
             };
-            let elapsed = now
-                .signed_duration_since(s.last_activity)
-                .num_seconds()
-                .max(0);
-            let age = if s.last_activity == chrono::DateTime::UNIX_EPOCH {
-                "?".into()
-            } else if elapsed < 60 {
-                format!("{elapsed}s")
-            } else if elapsed < 3600 {
-                format!("{}m", elapsed / 60)
-            } else if elapsed < 86400 {
-                format!("{}h", elapsed / 3600)
-            } else {
-                format!("{}d", elapsed / 86400)
-            };
+            let age = activity_age(s.last_activity, now);
             let event_count = compact_count(s.events.len() as u64);
             let (indent, gap) = if area.width >= 38 {
                 ("  ", "  ")
@@ -1163,9 +1176,9 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
         if area.width < 65 {
             " d Flow  Tab panel  Enter turn  x tool".into()
         } else if area.width < 95 {
-            " d Flow  Tab panel  Enter turn  x tool  o sort".into()
+            " d Flow  Tab panel  Enter turn  x tool  o sort  w range".into()
         } else {
-            " d Flow  v Parallel  Tab panels  j/k move  Enter turn  x slowest tool  o sort  / search  p provider  ? help  q quit".into()
+            " d Flow  v Parallel  Tab panels  j/k move  Enter turn  x slowest tool  o sort  w range  / search  p provider  ? help  q quit".into()
         }
     } else if app.parallel.visible {
         if area.width < 95 {
@@ -1202,7 +1215,7 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
             app.snapshot.warnings[0]
         )
     } else if app.dashboard.visible && area.width < 65 {
-        "v Parallel  o sort  ? help  q quit".into()
+        "w range  o sort  v Parallel  ? help  q quit".into()
     } else if app.parallel.visible && area.width < 95 {
         "v return  / search  f follow  ? help  q".into()
     } else if !app.dashboard.visible && area.width < 65 {
@@ -1240,9 +1253,12 @@ fn help(frame: &mut Frame, app: &mut App, area: Rect) {
         "d                          Switch Dashboard / Flow",
         "Tab / 1 2                  Sessions / turns (narrow screens: focused panel)",
         "o                          Sort by slowest turn / total / tool / open age",
+        "w                          Last activity: 24 hours → 7 days → all loaded sessions",
         "Enter                      Open slowest turn, or selected turn in Turns",
         "x                          Open slowest timed tool in the focused selection",
         "Totals cover ended turns in retained events, each agent separately.",
+        "Activity range filters sessions, not their retained turns. Flow is unchanged.",
+        "Last activity uses recorded timestamps; unknown dates appear in All only.",
         "* means partial history or timing gaps. — means unknown, never zero.",
         "Open age is not process liveness. Unrecorded gaps are not LLM time.",
         "",

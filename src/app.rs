@@ -654,8 +654,12 @@ impl App {
                 KeyCode::End | KeyCode::Char('G') => self.dashboard.movement(1_000_000),
                 KeyCode::Enter => self.open_dashboard_target(false),
                 KeyCode::Char('x') => self.open_dashboard_target(true),
-                KeyCode::Char('o') => {
-                    self.dashboard.sort = self.dashboard.sort.next();
+                KeyCode::Char('o' | 'w') => {
+                    if key.code == KeyCode::Char('w') {
+                        self.dashboard.window = self.dashboard.window.next();
+                    } else {
+                        self.dashboard.sort = self.dashboard.sort.next();
+                    }
                     self.dashboard.rebuild(
                         &self.snapshot,
                         self.provider,

@@ -2,7 +2,42 @@ use crate::{
     model::{Provider, Snapshot},
     timing::{SessionTiming, TurnTiming, summarize},
 };
+use chrono::{DateTime, Duration, Utc};
 use ratatui::widgets::ListState;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActivityWindow {
+    #[default]
+    Day,
+    Week,
+    All,
+}
+
+impl ActivityWindow {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Day => "24h",
+            Self::Week => "7d",
+            Self::All => "All",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            Self::Day => Self::Week,
+            Self::Week => Self::All,
+            Self::All => Self::Day,
+        }
+    }
+    fn includes(self, last_activity: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        let duration = match self {
+            Self::Day => Duration::hours(24),
+            Self::Week => Duration::days(7),
+            Self::All => return true,
+        };
+        last_activity != DateTime::UNIX_EPOCH
+            && now.signed_duration_since(last_activity) <= duration
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sort {
@@ -56,6 +91,7 @@ pub struct Dashboard {
     pub turn_order: Vec<usize>,
     pub focus_turns: bool,
     pub sort: Sort,
+    pub window: ActivityWindow,
 }
 
 impl Default for Dashboard {
@@ -68,6 +104,7 @@ impl Default for Dashboard {
             turn_order: vec![],
             focus_turns: false,
             sort: Sort::default(),
+            window: ActivityWindow::default(),
         }
     }
 }
@@ -96,6 +133,7 @@ impl Dashboard {
             .enumerate()
             .filter(|(_, s)| {
                 provider.is_none_or(|p| p == s.provider)
+                    && self.window.includes(s.last_activity, snapshot.scanned_at)
                     && (!active || s.status(snapshot.scanned_at) == "WORKING")
                     && (query.is_empty()
                         || format!("{} {} {} {}", s.title, s.cwd, s.id, s.agent_path)

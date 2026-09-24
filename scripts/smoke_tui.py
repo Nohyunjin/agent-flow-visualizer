@@ -38,6 +38,14 @@ try:
     assert b"AGENT FLOW" in captured, "initial frame missing"
     assert b"DASHBOARD" in captured, "dashboard missing"
     assert b"2 TURNS" in captured, "turn list missing"
+    # Ratatui may use cursor moves instead of spaces between words.
+    assert b"Activity:" in captured and b"24h" in captured, "default activity window missing"
+    assert b"Last" in captured and b"ago" in captured, "last activity age missing"
+    for window in [b"7d", b"All", b"24h"]:
+        captured.clear()
+        os.write(master, b"w")
+        drain()
+        assert window in captured, f"activity window did not switch to {window!r}"
     captured.clear()
     os.write(master, b"x")
     drain()
@@ -87,7 +95,7 @@ try:
     assert os.waitstatus_to_exitcode(status) == 0, f"exit status {status}"
     assert b"\x1b[?1049l" in captured, "alternate screen was not restored"
     assert b"panicked" not in captured, "panic detected"
-    print("PTY smoke passed: dashboard, foldable agent tree, agent detail, family lanes, exact tool/turn drill-down, filters, follow, resize down to 42x12, clean exit")
+    print("PTY smoke passed: dashboard activity windows and ages, foldable agent tree, agent detail, family lanes, exact tool/turn drill-down, filters, follow, resize down to 42x12, clean exit")
 finally:
     os.close(master)
     try:

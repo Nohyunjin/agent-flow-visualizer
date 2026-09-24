@@ -12,7 +12,11 @@ Restrained, terminal-native. Cyan marks focus and actor identity. Yellow marks p
 
 Start in Dashboard, with `d` switching to the three-panel Flow explorer. Dashboard ranks individual agents by slowest ended turn by default; `o` cycles total ended turn time, slowest tool and open turn age. At 125 columns use 56/44 percent session/turn lists; at 95–124 columns and sufficient height stack the lists; otherwise show the focused list. `Tab`, `1` and `2` select lists. Preserve selected session and turn identities across refresh and reordering.
 
+Dashboard defaults to sessions with recorded activity in the last 24 hours. `w` cycles 24 hours, 7 days, and all loaded sessions. Use the last activity timestamp, not creation time or file mtime, and include the exact cutoff. Show `w Activity: 24h` early in the header so the range remains visible at 42 columns. Unknown timestamps appear only in All. Apply this filter only to Dashboard sessions; retained turn totals and Flow/Parallel scope stay independent. Recompute against the displayed snapshot time so pausing freezes both the range and ages. Preserve selection while it remains in range, otherwise select the first remaining session. Empty states offer `w` to widen the range.
+
 Session rows show task, provider, Main/Sub, transcript status, total ended time, slowest turn/tool and open age. Turn rows show duration, ENDED/INTERRUPTED/OPEN/MISSING END and timestamp/reported provenance, followed by the request and slowest tool. Use `*` for partial history or timing gaps and `—` for unknown values. Time aggregation covers only retained events; never sum children into parents, tools into turns, or overlapping intervals twice. Open age is separate from ended totals. `Enter` opens the turn boundary in Flow, `x` its slowest tool, with follow off and event filters cleared so the requested event remains visible.
+
+Keep four lines per Dashboard session. Use the fourth line for muted `Last 5m ago` or `Last activity unknown` so activity age stays visible even when the task title or tool description is long.
 
 Three persistent contexts: agent tree, event flow, inspector. At 145 columns, use 25/39/36 percent columns. At 95 columns, retain a 32-column agent tree and stack flow/inspector. Below 95 columns, show the focused panel and retain the same keyboard controls. Minimum usable size is 42 columns by 12 rows.
 
